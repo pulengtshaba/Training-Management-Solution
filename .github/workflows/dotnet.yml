@@ -1,0 +1,68 @@
+name: .NET CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  build-and-test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # -----------------------------
+      # Checkout repository
+      # -----------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # -----------------------------
+      # Setup .NET
+      # -----------------------------
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      # -----------------------------
+      # Restore dependencies
+      # -----------------------------
+      - name: Restore dependencies
+        run: dotnet restore
+
+      # -----------------------------
+      # Build
+      # -----------------------------
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      # -----------------------------
+      # Run tests + collect coverage
+      # -----------------------------
+      - name: Test with coverage
+        run: >
+          dotnet test
+          --no-build
+          --configuration Release
+          --collect:"XPlat Code Coverage"
+          --results-directory ./TestResults
+          -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
+
+      # -----------------------------
+      # Upload coverage to Codecov
+      # -----------------------------
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./TestResults/**/coverage.cobertura.xml
+          fail_ci_if_error: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
