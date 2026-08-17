@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="codecov.yml" />
+  </Folder>
+  <Project Path="TrainingManagement.Api.Tests/TrainingManagement.Api.Tests.csproj" />
+  <Project Path="TrainingManagement.Api/TrainingManagement.Api.csproj" />
+</Solution>
