@@ -1,7 +1,5 @@
 # Training Management System Web API
 
-# Training Management API
-
 [![Build](https://github.com/pulengtshaba/Training-Management-Solution/actions/workflows/dotnet.yml/badge.svg)](https://github.com/pulengtshaba/Training-Management-Solution/actions/workflows/dotnet.yml)
 
 [![codecov](https://codecov.io/gh/pulengtshaba/Training-Management-Solution/branch/main/graph/badge.svg)](https://codecov.io/gh/pulengtshaba/Training-Management-Solution)
