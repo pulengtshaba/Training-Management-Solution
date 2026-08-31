@@ -16,7 +16,7 @@ jobs:
         with:
           dotnet-version: '10.x'
 
-      - run: dotnet publish backend/TrainingManagement.Api/TrainingManagement.Api.csproj -c Release -o publish
+      - run: dotnet publish ./TrainingManagement.Api/TrainingManagement.Api.csproj -c Release -o publish
 
       - uses: azure/webapps-deploy@v3
         with:
