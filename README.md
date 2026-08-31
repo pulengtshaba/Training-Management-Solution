@@ -6,7 +6,7 @@
 
 ASP.NET Core Web API for managing training programs, employees,
 events, participants, authentication and authorization.
-## Overview
+## Overview(learning project)
 
 The Training Management System (TMS) is a monolithic ASP.NET Core Web API designed to manage employee training across multiple branches within an organization.
 
