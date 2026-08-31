@@ -1,0 +1,25 @@
+name: Deploy ASP.NET API
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - run: dotnet publish backend/TrainingManagement.Api/TrainingManagement.Api.csproj -c Release -o publish
+
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: asp-myapi-dev
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: publish
