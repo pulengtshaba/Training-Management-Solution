@@ -1,0 +1,114 @@
+name: .NET CD
+
+on:
+  workflow_run:
+    workflows:
+      - ".NET CI"
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  DOTNET_VERSION: "10.x"
+
+  RESOURCE_GROUP: "rg-enterprise-dev"
+  CONTAINER_APP_NAME: "trainingmanagement-api"
+  ACR_NAME: "charlesturneracr"
+
+jobs:
+
+  deploy:
+    name: Build Docker Image and Deploy
+    runs-on: ubuntu-latest
+
+    # Only deploy when CI succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+
+      # ----------------------------------------
+      # Checkout the exact commit that CI tested
+      # ----------------------------------------
+      - name: Checkout tested commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # ----------------------------------------
+      # Login to Azure using OIDC
+      # ----------------------------------------
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ----------------------------------------
+      # Login Docker to Azure Container Registry
+      # ----------------------------------------
+      - name: Login to Azure Container Registry
+        run: |
+          az acr login --name "$ACR_NAME"
+
+      # ----------------------------------------
+      # Set Docker image information
+      # ----------------------------------------
+      - name: Set image variables
+        run: |
+          ACR_LOGIN_SERVER=$(az acr show \
+            --name "$ACR_NAME" \
+            --query loginServer \
+            --output tsv)
+
+          IMAGE_TAG="${{ github.event.workflow_run.head_sha }}"
+
+          echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=$ACR_LOGIN_SERVER/trainingmanagement-api:$IMAGE_TAG" >> "$GITHUB_ENV"
+
+      # ----------------------------------------
+      # Build Docker image
+      # ----------------------------------------
+      - name: Build Docker image
+        run: |
+          docker build \
+            --tag "$IMAGE_NAME" \
+            .
+
+      # ----------------------------------------
+      # Push Docker image to ACR
+      # ----------------------------------------
+      - name: Push Docker image
+        run: |
+          docker push "$IMAGE_NAME"
+
+      # ----------------------------------------
+      # Deploy image to Azure Container Apps
+      # ----------------------------------------
+      - name: Deploy to Azure Container Apps
+        run: |
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE_NAME"
+
+      # ----------------------------------------
+      # Show deployment information
+      # ----------------------------------------
+      - name: Show deployment
+        run: |
+          echo "Image deployed:"
+          echo "$IMAGE_NAME"
+
+          echo "Container App:"
+          az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv
