@@ -4,7 +4,7 @@
 
 [![codecov](https://codecov.io/gh/pulengtshaba/Training-Management-Solution/branch/main/graph/badge.svg)](https://codecov.io/gh/pulengtshaba/Training-Management-Solution)
 
-[![Deploy ASP.NET API](https://github.com/pulengtshaba/Training-Management-Solution/actions/workflows/deploy-api.yml/badge.svg)](https://github.com/pulengtshaba/Training-Management-Solution/actions/workflows/deploy-api.yml)
+[![.NET CD](https://github.com/pulengtshaba/Training-Management-Solution/actions/workflows/dotnet-cd.yml/badge.svg)](https://github.com/pulengtshaba/Training-Management-Solution/actions/workflows/dotnet-cd.yml)
 
 ASP.NET Core Web API for managing training programs, employees,
 events, participants, authentication and authorization.
