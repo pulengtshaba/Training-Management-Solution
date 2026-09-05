@@ -48,6 +48,9 @@ jobs:
       # Run tests + collect coverage
       # -----------------------------
       - name: Test with coverage
+        env:
+            ConnectionStrings__DefaultConnection: ${{ secrets.TEST_DB_CONNECTION_STRING }}
+            Jwt__Key: ${{ secrets.TEST_JWT_KEY }}
         run: >
           dotnet test
           --no-build
