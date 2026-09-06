@@ -1,5 +1,8 @@
 name: .NET CD
 
+# ============================================================
+# Trigger CD only after the .NET CI workflow completes on main
+# ============================================================
 on:
   workflow_run:
     workflows:
@@ -9,109 +12,471 @@ on:
     branches:
       - main
 
+# Required for Azure OIDC authentication
 permissions:
   contents: read
   id-token: write
 
+# ============================================================
+# Azure configuration
+# ============================================================
 env:
-  DOTNET_VERSION: "10.x"
-
   RESOURCE_GROUP: "rg-enterprise-dev"
   CONTAINER_APP_NAME: "trainingmanagement-api"
   ACR_NAME: "charlesturneracr"
 
+  # CHANGE THIS to your real ACR resource name.
+  # Example: trainingmanagementacr
+
+  IMAGE_REPOSITORY: "trainingmanagement-api"
+
+
 jobs:
 
+  # ==========================================================
+  # BUILD + DEPLOY
+  # ==========================================================
   deploy:
-    name: Build Docker Image and Deploy
+
+    name: Build and Deploy
+
+    # Do not deploy when CI failed.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
     runs-on: ubuntu-latest
 
+    # GitHub production environment.
+    #
+    # Configure:
+    # Settings -> Environments -> production
+    #
+    # Required reviewers can be configured there.
     environment:
       name: production
 
-    # Only deploy when CI succeeded
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
 
-      # ----------------------------------------
-      # Checkout the exact commit that CI tested
-      # ----------------------------------------
+      # ======================================================
+      # 1. CHECKOUT
+      #
+      # Checkout exactly the commit that CI tested.
+      # ======================================================
       - name: Checkout tested commit
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      # ----------------------------------------
-      # Login to Azure using OIDC
-      # ----------------------------------------
-      - name: Login to Azure
+
+      # ======================================================
+      # 2. AZURE LOGIN
+      #
+      # Uses GitHub OIDC.
+      #
+      # No Azure client secret is required.
+      # ======================================================
+      - name: Login to Azure using OIDC
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # ----------------------------------------
-      # Login Docker to Azure Container Registry
-      # ----------------------------------------
-      - name: Login to Azure Container Registry
-        run: |
-          az acr login --name "$ACR_NAME"
 
-      # ----------------------------------------
-      # Set Docker image information
-      # ----------------------------------------
-      - name: Set image variables
+      # ======================================================
+      # 3. GET ACR LOGIN SERVER
+      #
+      # Do not assume the login server is simply
+      # <acr-name>.azurecr.io.
+      # ======================================================
+      - name: Get ACR information
+        shell: bash
         run: |
+          set -euo pipefail
+
           ACR_LOGIN_SERVER=$(az acr show \
             --name "$ACR_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
             --query loginServer \
             --output tsv)
 
           IMAGE_TAG="${{ github.event.workflow_run.head_sha }}"
+          IMAGE_NAME="$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY:$IMAGE_TAG"
 
           echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
           echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
-          echo "IMAGE_NAME=$ACR_LOGIN_SERVER/trainingmanagement-api:$IMAGE_TAG" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
 
-      # ----------------------------------------
-      # Build Docker image
-      # ----------------------------------------
-      - name: Build Docker image
+          echo "Image to deploy:"
+          echo "$IMAGE_NAME"
+
+
+      # ======================================================
+      # 4. LOGIN TO ACR
+      # ======================================================
+      - name: Login to Azure Container Registry
+        shell: bash
         run: |
+          set -euo pipefail
+
+          az acr login \
+            --name "$ACR_NAME"
+
+
+      # ======================================================
+      # 5. BUILD DOCKER IMAGE
+      #
+      # Dockerfile is expected at repository root.
+      # ======================================================
+      - name: Build Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+
           docker build \
             --tag "$IMAGE_NAME" \
             .
 
-      # ----------------------------------------
-      # Push Docker image to ACR
-      # ----------------------------------------
+
+      # ======================================================
+      # 6. PUSH IMAGE TO ACR
+      # ======================================================
       - name: Push Docker image
+        shell: bash
         run: |
+          set -euo pipefail
+
           docker push "$IMAGE_NAME"
 
-      # ----------------------------------------
-      # Deploy image to Azure Container Apps
-      # ----------------------------------------
-      - name: Deploy to Azure Container Apps
+
+      # ======================================================
+      # 7. ENSURE MULTIPLE REVISION MODE
+      #
+      # Required for our blue/green deployment strategy.
+      # ======================================================
+      - name: Enable multiple revision mode
+        shell: bash
         run: |
+          set -euo pipefail
+
+          az containerapp revision set-mode \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --mode multiple
+
+
+      # ======================================================
+      # 8. CAPTURE BLUE REVISION
+      #
+      # BLUE = revision currently receiving production traffic.
+      # ======================================================
+      - name: Capture Blue revision
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BLUE_REVISION=$(az containerapp ingress traffic show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "[?weight==\`100\`].revisionName | [0]" \
+            --output tsv)
+
+          if [ -z "$BLUE_REVISION" ]; then
+            echo "Unable to determine current production revision."
+            exit 1
+          fi
+
+          echo "BLUE_REVISION=$BLUE_REVISION" >> "$GITHUB_ENV"
+
+          echo "Current production revision:"
+          echo "$BLUE_REVISION"
+
+
+      # ======================================================
+      # 9. DEPLOY GREEN IMAGE
+      #
+      # Azure creates a new Container Apps revision because
+      # the container image changed.
+      # ======================================================
+      - name: Deploy Green image
+        shell: bash
+        run: |
+          set -euo pipefail
+
           az containerapp update \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
             --image "$IMAGE_NAME"
 
-      # ----------------------------------------
-      # Show deployment information
-      # ----------------------------------------
-      - name: Show deployment
-        run: |
-          echo "Image deployed:"
-          echo "$IMAGE_NAME"
 
-          echo "Container App:"
-          az containerapp show \
+      # ======================================================
+      # 10. FIND GREEN REVISION
+      #
+      # Find the revision running the exact SHA-tagged image.
+      # ======================================================
+      - name: Capture Green revision
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Waiting for Azure to create the new revision..."
+
+          GREEN_REVISION=""
+
+          for i in {1..12}; do
+
+            GREEN_REVISION=$(az containerapp revision list \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --query "[?properties.template.containers[0].image=='$IMAGE_NAME'].name | [0]" \
+              --output tsv)
+
+            if [ -n "$GREEN_REVISION" ]; then
+              break
+            fi
+
+            echo "Revision not available yet. Attempt $i/12."
+            sleep 5
+
+          done
+
+          if [ -z "$GREEN_REVISION" ]; then
+            echo "Unable to determine Green revision."
+            exit 1
+          fi
+
+          echo "GREEN_REVISION=$GREEN_REVISION" >> "$GITHUB_ENV"
+
+          echo "Green revision:"
+          echo "$GREEN_REVISION"
+
+
+      # ======================================================
+      # 11. KEEP PRODUCTION ON BLUE
+      #
+      # Users remain on the known-good revision while Green
+      # is being tested.
+      # ======================================================
+      - name: Keep traffic on Blue
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          az containerapp ingress traffic set \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
-            --query "properties.configuration.ingress.fqdn" \
-            --output tsv
+            --revision-weight "$BLUE_REVISION=100"
+
+          echo "Production remains on:"
+          echo "$BLUE_REVISION"
+
+
+      # ======================================================
+      # 12. GET GREEN REVISION FQDN
+      #
+      # We want to test Green directly rather than testing the
+      # public application URL, which still points to Blue.
+      # ======================================================
+      - name: Get Green revision URL
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GREEN_FQDN=$(az containerapp revision show \
+            --name "$GREEN_REVISION" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query properties.fqdn \
+            --output tsv)
+
+          if [ -z "$GREEN_FQDN" ]; then
+            echo "Unable to retrieve Green revision FQDN."
+            exit 1
+          fi
+
+          echo "GREEN_FQDN=$GREEN_FQDN" >> "$GITHUB_ENV"
+
+          echo "Green revision URL:"
+          echo "https://$GREEN_FQDN"
+
+
+      # ======================================================
+      # 13. HEALTH CHECK GREEN
+      #
+      # Give the new revision up to approximately 2 minutes
+      # to become healthy.
+      #
+      # Your API must expose:
+      #
+      # GET /health
+      #
+      # returning HTTP 200.
+      # ======================================================
+      - name: Health check Green revision
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking Green revision health..."
+
+          for i in {1..12}; do
+
+            HTTP_STATUS=$(curl \
+              --silent \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              "https://$GREEN_FQDN/health/live" || true)
+
+            echo "Attempt $i/12 - HTTP status: $HTTP_STATUS"
+
+            if [ "$HTTP_STATUS" = "200" ]; then
+
+              echo "Green revision is healthy."
+
+              exit 0
+
+            fi
+
+            echo "Green revision is not ready."
+
+            sleep 10
+
+          done
+
+          echo "Green revision failed health verification."
+
+          exit 1
+
+
+      # ======================================================
+      # 14. PROMOTE GREEN
+      #
+      # This runs only if the health check succeeded.
+      # ======================================================
+      - name: Promote Green to production
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Promoting Green revision..."
+
+          az containerapp ingress traffic set \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --revision-weight "$GREEN_REVISION=100"
+
+          echo "Production is now running:"
+          echo "$GREEN_REVISION"
+
+
+      # ======================================================
+      # 15. VERIFY PRODUCTION ENDPOINT
+      # ======================================================
+      - name: Verify production
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FQDN=$(az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)
+
+          echo "Production URL:"
+          echo "https://$FQDN"
+
+          echo "Checking production health..."
+
+          for i in {1..6}; do
+
+            HTTP_STATUS=$(curl \
+              --silent \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              "https://$FQDN/health/live" || true)
+
+            echo "Attempt $i/6 - HTTP status: $HTTP_STATUS"
+
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "Production deployment verified."
+              exit 0
+            fi
+
+            sleep 10
+
+          done
+
+          echo "Production verification failed."
+
+          exit 1
+
+
+      # ======================================================
+      # 16. AUTOMATIC ROLLBACK
+      #
+      # Runs when a previous deployment/verification step
+      # failed.
+      #
+      # We also check that BLUE_REVISION was actually captured
+      # before attempting rollback.
+      # ======================================================
+      - name: Rollback to Blue
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          echo "Deployment failure detected."
+
+          if [ -z "${BLUE_REVISION:-}" ]; then
+            echo "Blue revision was not captured."
+            echo "Automatic rollback cannot be performed."
+            exit 1
+          fi
+
+          echo "Rolling back to:"
+          echo "$BLUE_REVISION"
+
+          az containerapp revision activate \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --revision "$BLUE_REVISION" || true
+
+          az containerapp ingress traffic set \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --revision-weight "$BLUE_REVISION=100"
+
+          echo "Rollback complete."
+
+
+      # ======================================================
+      # 17. DEPLOYMENT SUMMARY
+      # ======================================================
+      - name: Deployment summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo " Training Management Deployment"
+          echo "=========================================="
+
+          echo "Commit:"
+          echo "${{ github.event.workflow_run.head_sha }}"
+
+          echo ""
+
+          echo "Docker image:"
+          echo "${IMAGE_NAME:-Not created}"
+
+          echo ""
+
+          echo "Previous Blue revision:"
+          echo "${BLUE_REVISION:-Unknown}"
+
+          echo ""
+
+          echo "Green revision:"
+          echo "${GREEN_REVISION:-Not created}"
+
+          echo ""
+
+          echo "=========================================="
