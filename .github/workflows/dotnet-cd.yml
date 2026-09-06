@@ -171,27 +171,76 @@ jobs:
       # BLUE = revision currently receiving production traffic.
       # ======================================================
       - name: Capture Blue revision
+        id: blue
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "=========================================="
+          echo " Current Container App revisions"
+          echo "=========================================="
+
+          az containerapp revision list \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --output table
+
+          echo ""
+          echo "=========================================="
+          echo " Current traffic configuration"
+          echo "=========================================="
+
+          az containerapp ingress traffic show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --output table || true
+
+          echo ""
+          echo "Looking for current production revision..."
+
+          # --------------------------------------------------
+          # Strategy 1:
+          # Find the revision with the highest explicit
+          # traffic weight.
+          # --------------------------------------------------
           BLUE_REVISION=$(az containerapp ingress traffic show \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
-            --query "[?weight==\`100\`].revisionName | [0]" \
-            --output tsv)
+            --query "sort_by([?revisionName != null], &weight)[-1].revisionName" \
+            --output tsv 2>/dev/null || true)
 
-          if [ -z "$BLUE_REVISION" ]; then
-            echo "Unable to determine current production revision."
+          # --------------------------------------------------
+          # Strategy 2:
+          # If traffic configuration does not identify a
+          # revision, use the newest active revision.
+          # --------------------------------------------------
+          if [ -z "$BLUE_REVISION" ] || [ "$BLUE_REVISION" = "None" ]; then
+
+            echo "No explicit traffic revision found."
+            echo "Falling back to newest active revision..."
+
+            BLUE_REVISION=$(az containerapp revision list \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --query "sort_by([?properties.active==\`true\`], &properties.createdTime)[-1].name" \
+              --output tsv)
+
+          fi
+
+          # --------------------------------------------------
+          # Final validation
+          # --------------------------------------------------
+          if [ -z "$BLUE_REVISION" ] || [ "$BLUE_REVISION" = "None" ]; then
+            echo "ERROR: No active Container App revision could be found."
             exit 1
           fi
 
-          echo "BLUE_REVISION=$BLUE_REVISION" >> "$GITHUB_ENV"
-
-          echo "Current production revision:"
+          echo ""
+          echo "Blue revision selected:"
           echo "$BLUE_REVISION"
 
-
+          echo "BLUE_REVISION=$BLUE_REVISION" >> "$GITHUB_ENV"
+          echo "blue_revision=$BLUE_REVISION" >> "$GITHUB_OUTPUT"
       # ======================================================
       # 9. DEPLOY GREEN IMAGE
       #
